@@ -25,7 +25,7 @@ sub supported_parameters {
 use constant default_severity => $SEVERITY_MEDIUM;
 use constant applies_to       => 'PPI::Statement::Include';
 
-use constant optional_config_attributes => qw{ prefer reason };
+use constant optional_config_attributes => qw{ prefer reason severity };
 
 # VERSION
 # ABSTRACT: Provide custom package recommendations
@@ -34,7 +34,14 @@ sub initialize_if_enabled {
     my ( $self, $config ) = @_;
 
     my $cfg_file = $config->get('config') // '';
-    $cfg_file =~ s{^~}{$ENV{HOME}};
+    if ( $cfg_file =~ m{^~} ) {
+        if ( !defined $ENV{HOME} ) {
+            Perl::Critic::Exception::Configuration::Generic->throw(
+                message => __PACKAGE__ . ' config path starts with ~ but $ENV{HOME} is not defined',
+            );
+        }
+        $cfg_file =~ s{^~}{$ENV{HOME}};
+    }
 
     $self->{_is_enabled} = !! $self->_parse_config($cfg_file);
 
@@ -91,6 +98,13 @@ sub _parse_config {
             next if $valid_opts{$opt};
             $self->_add_exception("Invalid configuration - Package '$pkg' is using an unknown setting '$opt'");
         }
+
+        if ( defined $setup->{severity} ) {
+            my $sev = $setup->{severity};
+            if ( $sev !~ /\A[1-5]\z/ ) {
+                $self->_add_exception("Invalid configuration - Package '$pkg' has invalid severity '$sev' (must be 1-5)");
+            }
+        }
     }
 
     $self->{_cfg_preferred_modules} = $preferred_cfg;
@@ -114,6 +128,11 @@ sub violates {
 
     if ( my $prefer = $setup->{prefer} ) {
         $desc = "Prefer using module module $prefer over $module";
+    }
+
+    if ( my $sev = $setup->{severity} ) {
+        local $self->{_severity} = $sev;
+        return $self->violation( $desc, $expl, $elem );
     }
 
     return $self->violation( $desc, $expl, $elem );
@@ -160,6 +179,22 @@ The  F<preferred_modules.ini> file is using the L<Config::INI> format and can lo
     
     [Only::Reason]
     reason="If you use this module, a puppy might die."
+
+    [Hard::Ban]
+    severity=5
+    reason="This module has known security vulnerabilities"
+
+Each module entry supports the following optional keys:
+
+=over 4
+
+=item C<prefer> - Suggested replacement module
+
+=item C<reason> - Explanation shown in the violation message
+
+=item C<severity> - Override the policy's default severity for this module (1-5, where 5 is most severe)
+
+=back
 
 =head1 SEE ALSO
 

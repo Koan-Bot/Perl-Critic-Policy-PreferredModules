@@ -7,18 +7,24 @@ use Test2::V0;
 use Test2::Tools::Explain;
 use Test2::Plugin::NoWarnings;
 
-use Test::MockFile;
+use File::Temp qw( tempdir );
+use File::Spec ();
 
 use Perl::Critic::Policy::PreferredModules ();
 use Perl::Critic                           ();
 
-my $profile_rc = q[/test/profile.rc];
-my $config_ini = q[/test/preferred_modules.ini];
+my $tmpdir     = tempdir( CLEANUP => 1 );
+my $profile_rc = File::Spec->catfile( $tmpdir, 'profile.rc' );
+my $config_ini = File::Spec->catfile( $tmpdir, 'preferred_modules.ini' );
 
-my $mock_profile    = Test::MockFile->file($profile_rc);
-my $mock_config_ini = Test::MockFile->file($config_ini);
+sub _write_file {
+    my ( $path, $content ) = @_;
+    open my $fh, '>', $path or die "Cannot write $path: $!";
+    print $fh $content;
+    close $fh;
+}
 
-$mock_profile->contents( <<"EOS" );
+_write_file( $profile_rc, <<"EOS" );
 severity = 1
 verbose  = 8
 
@@ -40,7 +46,7 @@ EOS
     );
 }
 
-$mock_config_ini->contents( <<EOS );
+_write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 prefer = Another::Package
 reason = Please prefer using Another::Package rather than package Do::Not::Recommend
@@ -59,7 +65,7 @@ my $critic = Perl::Critic->new(
 
 {
 
-    $mock_config_ini->contents( <<EOS );
+    _write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 prefer = Another::Package
 reason = Please prefer using Another::Package rather than package Do::Not::Recommend
@@ -80,7 +86,7 @@ EOS
 
 {    # using invalid args
 
-    $mock_config_ini->contents( <<EOS );
+    _write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 boom = Unknown arg
 EOS
@@ -98,9 +104,55 @@ EOS
 
 }
 
+{    # using invalid INI syntax
+
+    _write_file( $config_ini, <<EOS );
+[Do::Not::Recommend
+this is not valid INI
+EOS
+
+    like(
+        dies {
+            $critic = Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Perl::Critic::Policy::PreferredModules Invalid configuration file},
+        "Throw exception on invalid INI content"
+    );
+
+}
+
+{    # tilde expansion without $ENV{HOME}
+
+    my $tilde_rc = File::Spec->catfile( $tmpdir, 'tilde_profile.rc' );
+    _write_file( $tilde_rc, <<'EOS' );
+severity = 1
+verbose  = 8
+
+[PreferredModules]
+config = ~/preferred_modules.ini
+EOS
+
+    local $ENV{HOME};
+    delete $ENV{HOME};
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $tilde_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{config path starts with ~ but .ENV\{HOME\} is not defined},
+        "Throw exception when config uses ~ but HOME is not set"
+    );
+}
+
 ## Shared init
 
-$mock_config_ini->contents( <<EOS );
+_write_file( $config_ini, <<EOS );
 [FindBin]
 prefer = Something::Else
 reason = relax this is just a test
@@ -207,6 +259,110 @@ EOS
             ]
         ],
         'violations description & explanation'
+    );
+}
+
+# severity override tests
+
+{
+    note "severity override per module";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+reason = relax this is just a test
+severity = 5
+[XML::LibXML]
+prefer = XML::Simple
+[XML::DOM]
+severity = 1
+EOS
+
+    my $sev_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+1;
+EOS
+
+        my @violations = $sev_critic->critique( \$code );
+        is scalar @violations => 1, "FindBin violation with severity override";
+        is $violations[0]->severity, 5, "severity overridden to 5 for FindBin";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use XML::DOM;
+
+1;
+EOS
+
+        my @violations = $sev_critic->critique( \$code );
+        is scalar @violations => 1, "XML::DOM violation with severity override";
+        is $violations[0]->severity, 1, "severity overridden to 1 for XML::DOM";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use XML::LibXML;
+
+1;
+EOS
+
+        my @violations = $sev_critic->critique( \$code );
+        is scalar @violations => 1, "XML::LibXML violation without severity override";
+        is $violations[0]->severity, 3, "default severity (3) for XML::LibXML";
+    }
+}
+
+{
+    note "invalid severity value";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+severity = 9
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{invalid severity '9'},
+        "Throw exception on invalid severity value"
+    );
+}
+
+{
+    note "non-numeric severity value";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+severity = high
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{invalid severity 'high'},
+        "Throw exception on non-numeric severity value"
     );
 }
 
