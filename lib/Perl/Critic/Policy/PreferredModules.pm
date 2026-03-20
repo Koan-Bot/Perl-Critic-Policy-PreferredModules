@@ -34,7 +34,14 @@ sub initialize_if_enabled {
     my ( $self, $config ) = @_;
 
     my $cfg_file = $config->get('config') // '';
-    $cfg_file =~ s{^~}{$ENV{HOME}};
+    if ( $cfg_file =~ m{^~} ) {
+        if ( !defined $ENV{HOME} ) {
+            Perl::Critic::Exception::Configuration::Generic->throw(
+                message => __PACKAGE__ . ' config path starts with ~ but $ENV{HOME} is not defined',
+            );
+        }
+        $cfg_file =~ s{^~}{$ENV{HOME}};
+    }
 
     $self->{_is_enabled} = !! $self->_parse_config($cfg_file);
 

@@ -124,6 +124,32 @@ EOS
 
 }
 
+{    # tilde expansion without $ENV{HOME}
+
+    my $tilde_rc = File::Spec->catfile( $tmpdir, 'tilde_profile.rc' );
+    _write_file( $tilde_rc, <<'EOS' );
+severity = 1
+verbose  = 8
+
+[PreferredModules]
+config = ~/preferred_modules.ini
+EOS
+
+    local $ENV{HOME};
+    delete $ENV{HOME};
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $tilde_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{config path starts with ~ but .ENV\{HOME\} is not defined},
+        "Throw exception when config uses ~ but HOME is not set"
+    );
+}
+
 ## Shared init
 
 _write_file( $config_ini, <<EOS );
